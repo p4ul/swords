@@ -102,7 +102,7 @@ async function start() {
           createTracker(video, setProgress),
           new Promise((_, reject) => setTimeout(
             () => reject(new Error('Initialization timed out. Close this tab fully and reopen the page — a stale cached version may be loaded.')),
-            45000,
+            90000,
           )),
         ]);
       }

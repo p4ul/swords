@@ -66,6 +66,8 @@ export async function createTracker(video, onProgress = () => {}) {
   const since = () => `${Math.round(performance.now() - t0)} ms`;
 
   onProgress('Starting GPU backend…', 0.18);
+  // Fewer shader variants = much faster first-run compile on mobile GPUs.
+  try { tf.env().set('WEBGL_USE_SHAPES_UNIFORMS', true); } catch {}
   // ?backend=cpu overrides (debug / broken-WebGL devices); otherwise try
   // WebGL and fall back to CPU rather than failing outright.
   const forced = new URLSearchParams(location.search).get('backend');
@@ -96,7 +98,41 @@ export async function createTracker(video, onProgress = () => {}) {
   );
   log(`MoveNet detector created — ${since()}`);
 
-  onProgress('Compiling GPU shaders (first inference)…', 0.88);
+  onProgress('Compiling GPU shaders — first run can take a minute…', 0.88);
+  // Shader compilation is the one stage that can block the main thread hard
+  // (the screen freezes and the progress bar stops repainting). Two guards:
+  // 1. Yield two frames so the 88% state is actually painted before any block.
+  await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(r, 30))));
+  // 2. Prefer TF.js's parallel shader compilation (KHR_parallel_shader_compile):
+  //    shaders compile on GPU driver threads while we await, so the page stays
+  //    responsive. Falls back to the plain blocking warm-up if unsupported.
+  if (tf.getBackend() === 'webgl') {
+    let warmupInput = null;
+    try {
+      const backend = tf.backend();
+      if (typeof backend.checkCompileCompletionAsync === 'function') {
+        // Use a zeros tensor, NOT the video: fromPixels must not run in
+        // compile-only mode (it skips the texture upload and poisons the
+        // pipeline for subsequent real frames).
+        warmupInput = tf.zeros([video.videoHeight || 480, video.videoWidth || 640, 3], 'int32');
+        tf.env().set('ENGINE_COMPILE_ONLY', true);
+        await detector.estimatePoses(warmupInput);
+        tf.env().set('ENGINE_COMPILE_ONLY', false);
+        // Documented sequence: wait for the driver's parallel compile, then
+        // cache uniform locations — without this the compiled programs are
+        // unusable (null uniform arrays on the first real inference).
+        await backend.checkCompileCompletionAsync();
+        if (typeof backend.getUniformLocations === 'function') backend.getUniformLocations();
+        if (typeof detector.reset === 'function') detector.reset();
+        log(`shaders compiled in parallel (page stayed responsive) — ${since()}`);
+      }
+    } catch (err) {
+      try { tf.env().set('ENGINE_COMPILE_ONLY', false); } catch {}
+      log('parallel shader compile unavailable, using blocking warm-up:', err.message);
+    } finally {
+      if (warmupInput) warmupInput.dispose();
+    }
+  }
   await detector.estimatePoses(video);
   log(`first inference done, shaders compiled — ${since()}`);
   onProgress('Ready!', 1);
