@@ -1,7 +1,7 @@
 // Minimal service worker: cache the app shell so the game loads fast on
 // repeat visits. Model weights and TF.js come from CDNs and are cached
 // with a stale-while-revalidate strategy.
-const CACHE = 'swordstorm-v1';
+const CACHE = 'swordstorm-v2';
 const SHELL = [
   '.',
   'index.html',
@@ -14,6 +14,8 @@ const SHELL = [
   'js/audio.js',
   'vendor/tf.min.js',
   'vendor/pose-detection.min.js',
+  'vendor/movenet/movenet-lightning.json',
+  'vendor/movenet/movenet-lightning.bin',
 ];
 
 self.addEventListener('install', (e) => {

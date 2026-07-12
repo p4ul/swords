@@ -70,10 +70,10 @@ can whitelist your dev machine's origin (dev only).
 
 ## Tech notes
 
-- Plain ES modules, zero build step. TensorFlow.js and the pose-detection
-  library are vendored in `vendor/` (no CDN dependency); only the MoveNet
-  model weights are fetched from TF Hub on first run. A service worker
-  caches everything after the first visit so subsequent loads are fast.
+- Plain ES modules, zero build step. TensorFlow.js, the pose-detection
+  library, **and the MoveNet model weights** are all vendored in `vendor/` —
+  zero external fetches at play time, so it works on locked-down networks
+  and fully offline once the service worker has cached the app.
 - **Debug mode:** append `?mock=1` to the URL to play without a camera —
   the swords are driven by synthetic swinging arms. Handy for tuning
   gameplay on a laptop.

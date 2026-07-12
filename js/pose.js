@@ -24,14 +24,29 @@ export async function openCamera(video) {
 
 export async function createTracker(video, onStatus = () => {}) {
   onStatus('Warming up GPU…');
-  await tf.setBackend('webgl');
+  // ?backend=cpu overrides (debug / broken-WebGL devices); otherwise try
+  // WebGL and fall back to CPU rather than failing outright.
+  const forced = new URLSearchParams(location.search).get('backend');
+  try {
+    await tf.setBackend(forced || 'webgl');
+  } catch {
+    await tf.setBackend('cpu');
+  }
   await tf.ready();
 
   onStatus('Loading pose model…');
+  // Model weights are vendored with the app (no TF Hub / Kaggle fetch —
+  // that host is slow or blocked on many networks and used to hang here).
   const detector = await poseDetection.createDetector(
     poseDetection.SupportedModels.MoveNet,
-    { modelType: poseDetection.movenet.modelType.SINGLEPOSE_LIGHTNING },
+    {
+      modelType: poseDetection.movenet.modelType.SINGLEPOSE_LIGHTNING,
+      modelUrl: './vendor/movenet/movenet-lightning.json',
+    },
   );
+
+  onStatus('First inference (compiling shaders)…');
+  await detector.estimatePoses(video);
 
   // Latest tracked hands, updated by a free-running estimation loop so the
   // render loop never blocks on inference.

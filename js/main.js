@@ -80,7 +80,15 @@ async function start() {
       } else {
         $('loadMsg').textContent = 'Requesting camera…';
         await openCamera(video);
-        tracker = await createTracker(video, (msg) => { $('loadMsg').textContent = msg; });
+        // Watchdog: initialization should take a few seconds at most now
+        // that the model ships with the app — never hang the loading screen.
+        tracker = await Promise.race([
+          createTracker(video, (msg) => { $('loadMsg').textContent = msg; }),
+          new Promise((_, reject) => setTimeout(
+            () => reject(new Error('Initialization timed out. Close this tab fully and reopen the page — a stale cached version may be loaded.')),
+            45000,
+          )),
+        ]);
       }
     }
   } catch (err) {
