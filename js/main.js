@@ -14,6 +14,19 @@ function showPanel(name) {
   if (!name) for (const el of Object.values(panels)) el.classList.add('hidden');
 }
 
+const log = (...args) => console.log('[SwordStorm]', ...args);
+
+// Loading-screen progress: message + overall fraction, mirrored to console.
+function setProgress(msg, frac) {
+  if (msg) $('loadMsg').textContent = msg;
+  if (frac != null) {
+    const pct = Math.round(frac * 100);
+    $('loadBar').style.width = `${pct}%`;
+    $('loadPct').textContent = `${pct}%`;
+  }
+  if (msg) log(frac != null ? `${msg} (${Math.round(frac * 100)}%)` : msg);
+}
+
 function resize() {
   canvas.width = window.innerWidth * (window.devicePixelRatio > 1.5 ? 1.5 : window.devicePixelRatio);
   canvas.height = window.innerHeight * (window.devicePixelRatio > 1.5 ? 1.5 : window.devicePixelRatio);
@@ -71,19 +84,22 @@ function createMockTracker() {
 async function start() {
   sfx.unlockAudio();
   showPanel('loading');
+  setProgress('Starting…', 0);
   await requestFullscreenAndWakeLock();
 
   try {
     if (!tracker) {
       if (MOCK) {
+        log('mock mode — synthetic arms, no camera or model');
         tracker = createMockTracker();
       } else {
-        $('loadMsg').textContent = 'Requesting camera…';
+        setProgress('Requesting camera…', 0.03);
         await openCamera(video);
+        setProgress('Camera ready', 0.15);
         // Watchdog: initialization should take a few seconds at most now
         // that the model ships with the app — never hang the loading screen.
         tracker = await Promise.race([
-          createTracker(video, (msg) => { $('loadMsg').textContent = msg; }),
+          createTracker(video, setProgress),
           new Promise((_, reject) => setTimeout(
             () => reject(new Error('Initialization timed out. Close this tab fully and reopen the page — a stale cached version may be loaded.')),
             45000,
@@ -92,7 +108,7 @@ async function start() {
       }
     }
   } catch (err) {
-    console.error(err);
+    console.error('[SwordStorm] init failed:', err);
     $('errMsg').textContent = err.name === 'NotAllowedError'
       ? 'Camera access was denied. The game needs the front camera to track your sword arms — allow camera access and reload.'
       : `Could not start: ${err.message}. The page must be served over HTTPS (or localhost) for camera access.`;
@@ -101,6 +117,7 @@ async function start() {
   }
 
   showPanel(null);
+  log('fight! game started');
   game = new Game(canvas);
   running = true;
   requestAnimationFrame(frame);
@@ -129,6 +146,7 @@ function frame(t) {
 }
 
 function finishGame() {
+  log(`game over — score ${game.score}, wave ${game.wave}, ${game.kills} kills`);
   const isBest = game.score > best();
   if (isBest) localStorage.setItem(BEST_KEY, String(game.score));
   $('finalScore').textContent = `${game.score} pts${isBest ? ' — NEW BEST! 🏆' : ''}`;

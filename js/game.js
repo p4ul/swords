@@ -267,6 +267,7 @@ export class Game {
       this.waveKills = 0;
       this.waveBannerT = 2.2;
       this.hp = Math.min(this.maxHp, this.hp + 1);   // small heal each wave
+      console.log(`[SwordStorm] wave ${this.wave} — score ${this.score}`);
       sfx.waveUp();
     }
     if (this.waveBannerT > 0) this.waveBannerT -= dt;

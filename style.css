@@ -89,6 +89,24 @@ button {
 
 button:active { transform: scale(0.95); }
 
+.progress {
+  width: min(340px, 60vw);
+  height: 10px;
+  margin: 18px auto 0;
+  background: rgba(180, 130, 255, 0.15);
+  border: 1px solid rgba(180, 130, 255, 0.25);
+  border-radius: 999px;
+  overflow: hidden;
+}
+
+#loadBar {
+  height: 100%;
+  width: 0%;
+  background: linear-gradient(90deg, #7df9ff, #b98cff, #ffb84d);
+  border-radius: 999px;
+  transition: width 0.25s ease;
+}
+
 .spinner {
   width: 48px;
   height: 48px;

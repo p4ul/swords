@@ -4,8 +4,13 @@
 // We only care about elbows + wrists: each forearm becomes a sword.
 
 const MIN_SCORE = 0.3;
+const MODEL_BYTES = 4650216; // size of movenet-lightning.bin, progress fallback
+
+const log = (...args) => console.log('[SwordStorm]', ...args);
 
 export async function openCamera(video) {
+  const t0 = performance.now();
+  log('requesting front camera…');
   const stream = await navigator.mediaDevices.getUserMedia({
     audio: false,
     video: {
@@ -19,34 +24,82 @@ export async function openCamera(video) {
     video.onloadedmetadata = () => resolve();
   });
   await video.play();
+  log(`camera open ${video.videoWidth}x${video.videoHeight} — ${Math.round(performance.now() - t0)} ms`);
   return stream;
 }
 
-export async function createTracker(video, onStatus = () => {}) {
-  onStatus('Warming up GPU…');
+// Temporarily wrap window.fetch so the model weight download reports byte
+// progress (TF.js loads the weights with fetch; we count the stream as it
+// passes through — no double download).
+async function withDownloadProgress(onBytes, run) {
+  const orig = window.fetch.bind(window);
+  window.fetch = async (input, init) => {
+    const res = await orig(input, init);
+    const url = typeof input === 'string' ? input : (input && input.url) || '';
+    if (!url.includes('movenet-lightning.bin') || !res.body) return res;
+    const total = Number(res.headers.get('Content-Length')) || MODEL_BYTES;
+    const reader = res.body.getReader();
+    let loaded = 0;
+    const counted = new ReadableStream({
+      async pull(controller) {
+        const { done, value } = await reader.read();
+        if (done) { controller.close(); return; }
+        loaded += value.byteLength;
+        onBytes(Math.min(1, loaded / total), loaded);
+        controller.enqueue(value);
+      },
+      cancel(reason) { return reader.cancel(reason); },
+    });
+    return new Response(counted, { status: res.status, statusText: res.statusText, headers: res.headers });
+  };
+  try {
+    return await run();
+  } finally {
+    window.fetch = orig;
+  }
+}
+
+// onProgress(message, fraction) — fraction is overall init progress in [0, 1]
+// (main.js reports the camera stage as 0–0.15 before calling this).
+export async function createTracker(video, onProgress = () => {}) {
+  const t0 = performance.now();
+  const since = () => `${Math.round(performance.now() - t0)} ms`;
+
+  onProgress('Starting GPU backend…', 0.18);
   // ?backend=cpu overrides (debug / broken-WebGL devices); otherwise try
   // WebGL and fall back to CPU rather than failing outright.
   const forced = new URLSearchParams(location.search).get('backend');
   try {
     await tf.setBackend(forced || 'webgl');
   } catch {
+    log('webgl backend failed, falling back to cpu');
     await tf.setBackend('cpu');
   }
   await tf.ready();
+  log(`tf backend '${tf.getBackend()}' ready — ${since()}`);
 
-  onStatus('Loading pose model…');
+  onProgress('Loading sword-tracking model…', 0.25);
   // Model weights are vendored with the app (no TF Hub / Kaggle fetch —
   // that host is slow or blocked on many networks and used to hang here).
-  const detector = await poseDetection.createDetector(
-    poseDetection.SupportedModels.MoveNet,
-    {
-      modelType: poseDetection.movenet.modelType.SINGLEPOSE_LIGHTNING,
-      modelUrl: './vendor/movenet/movenet-lightning.json',
-    },
+  const detector = await withDownloadProgress(
+    (frac, bytes) => onProgress(
+      `Loading sword-tracking model… ${(bytes / 1048576).toFixed(1)} MB`,
+      0.25 + frac * 0.55,
+    ),
+    () => poseDetection.createDetector(
+      poseDetection.SupportedModels.MoveNet,
+      {
+        modelType: poseDetection.movenet.modelType.SINGLEPOSE_LIGHTNING,
+        modelUrl: './vendor/movenet/movenet-lightning.json',
+      },
+    ),
   );
+  log(`MoveNet detector created — ${since()}`);
 
-  onStatus('First inference (compiling shaders)…');
+  onProgress('Compiling GPU shaders (first inference)…', 0.88);
   await detector.estimatePoses(video);
+  log(`first inference done, shaders compiled — ${since()}`);
+  onProgress('Ready!', 1);
 
   // Latest tracked hands, updated by a free-running estimation loop so the
   // render loop never blocks on inference.
@@ -57,6 +110,7 @@ export async function createTracker(video, onStatus = () => {}) {
   };
 
   let last = performance.now();
+  let lastFpsLog = performance.now();
   (async function loop() {
     while (state.running) {
       try {
@@ -65,8 +119,13 @@ export async function createTracker(video, onStatus = () => {}) {
         state.fps = state.fps * 0.9 + (1000 / Math.max(1, now - last)) * 0.1;
         last = now;
         state.hands = extractHands(poses[0]);
-      } catch {
+        if (now - lastFpsLog > 30000) {
+          lastFpsLog = now;
+          log(`pose tracking ~${state.fps.toFixed(0)} fps`);
+        }
+      } catch (err) {
         // Transient inference hiccup — keep last known hands and retry.
+        log('inference hiccup (retrying):', err.message);
         await new Promise((r) => setTimeout(r, 100));
       }
     }
