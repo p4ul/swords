@@ -1,0 +1,18 @@
+{
+  "name": "Sword Storm",
+  "short_name": "SwordStorm",
+  "description": "Motion-controlled sword fighting game — the camera tracks your arms and you slash demons out of the air.",
+  "start_url": ".",
+  "display": "fullscreen",
+  "orientation": "landscape",
+  "background_color": "#0b0714",
+  "theme_color": "#0b0714",
+  "icons": [
+    {
+      "src": "icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}

@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="theme-color" content="#0b0714">
+  <title>Sword Storm</title>
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="style.css">
+  <!-- TensorFlow.js + MoveNet pose detection (YOLO-class real-time human tracking, runs on the tablet GPU).
+       Vendored locally so the app shell has no CDN dependency; only the model
+       weights are fetched from TF Hub on first run (then cached). -->
+  <script src="vendor/tf.min.js"></script>
+  <script src="vendor/pose-detection.min.js"></script>
+</head>
+<body>
+  <video id="cam" playsinline muted autoplay></video>
+  <canvas id="game"></canvas>
+
+  <div id="overlay">
+    <div id="menu" class="panel">
+      <h1>⚔️ SWORD STORM</h1>
+      <p class="tag">Your arms are the swords. Stand back so the camera<br>sees your upper body, then slash the demons out of the air!</p>
+      <button id="startBtn">START</button>
+      <p class="hint">Works best in landscape, tablet propped up, 1.5–2&nbsp;m away.<br>Camera stays on-device — nothing is uploaded.</p>
+      <p id="bestLine" class="hint"></p>
+    </div>
+
+    <div id="loading" class="panel hidden">
+      <div class="spinner"></div>
+      <p id="loadMsg">Loading pose model…</p>
+    </div>
+
+    <div id="gameover" class="panel hidden">
+      <h1>💀 DEFEATED</h1>
+      <p id="finalScore" class="big"></p>
+      <p id="finalStats"></p>
+      <button id="retryBtn">FIGHT AGAIN</button>
+    </div>
+
+    <div id="error" class="panel hidden">
+      <h1>⚠️</h1>
+      <p id="errMsg"></p>
+      <button id="reloadBtn">RELOAD</button>
+    </div>
+  </div>
+
+  <script type="module" src="js/main.js"></script>
+  <script>
+    if ('serviceWorker' in navigator) {
+      addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(() => {}));
+    }
+  </script>
+</body>
+</html>

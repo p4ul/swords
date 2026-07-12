@@ -1,0 +1,102 @@
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+html, body {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: #0b0714;
+  font-family: 'Segoe UI', system-ui, sans-serif;
+  touch-action: none;
+  -webkit-user-select: none;
+  user-select: none;
+  overscroll-behavior: none;
+}
+
+#cam {
+  /* Raw camera feed is hidden; the game canvas draws it mirrored. */
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+
+#game {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+#overlay {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+}
+
+.panel {
+  pointer-events: auto;
+  text-align: center;
+  color: #fff;
+  background: rgba(12, 6, 26, 0.82);
+  border: 1px solid rgba(168, 120, 255, 0.35);
+  border-radius: 24px;
+  padding: 36px 48px;
+  max-width: 90vw;
+  backdrop-filter: blur(8px);
+  box-shadow: 0 0 60px rgba(120, 60, 255, 0.25);
+}
+
+.panel.hidden { display: none; }
+
+.panel h1 {
+  font-size: clamp(2rem, 6vw, 3.5rem);
+  letter-spacing: 0.08em;
+  background: linear-gradient(180deg, #fff, #b98cff);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  margin-bottom: 12px;
+  text-shadow: 0 0 30px rgba(150, 80, 255, 0.6);
+}
+
+.tag { font-size: clamp(0.9rem, 2.2vw, 1.15rem); color: #d8c8ff; line-height: 1.5; }
+
+.hint { margin-top: 16px; font-size: 0.8rem; color: #8f7cb8; line-height: 1.5; }
+
+.big { font-size: clamp(1.6rem, 5vw, 2.6rem); font-weight: 700; color: #ffd76e; margin: 8px 0; }
+
+#finalStats { color: #c9b8ee; }
+
+button {
+  margin-top: 24px;
+  font-size: clamp(1.1rem, 3vw, 1.5rem);
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  color: #1a0b30;
+  background: linear-gradient(180deg, #ffe9a8, #ffb84d);
+  border: none;
+  border-radius: 999px;
+  padding: 16px 56px;
+  cursor: pointer;
+  box-shadow: 0 6px 24px rgba(255, 170, 60, 0.4);
+  transition: transform 0.1s ease;
+}
+
+button:active { transform: scale(0.95); }
+
+.spinner {
+  width: 48px;
+  height: 48px;
+  margin: 0 auto 16px;
+  border: 4px solid rgba(180, 130, 255, 0.25);
+  border-top-color: #b98cff;
+  border-radius: 50%;
+  animation: spin 0.9s linear infinite;
+}
+
+@keyframes spin { to { transform: rotate(360deg); } }
