@@ -14,7 +14,7 @@ function showPanel(name) {
   if (!name) for (const el of Object.values(panels)) el.classList.add('hidden');
 }
 
-const BUILD = 'v8';
+const BUILD = 'v9';
 
 const log = (...args) => console.log('[SwordStorm]', ...args);
 log(`build ${BUILD}`);
@@ -202,6 +202,8 @@ function frame(t) {
 
   game.stats.render = renderFps;
   game.stats.pose = tracker.fps || 0;
+  game.stats.engine = tracker.engine || '';
+  game.stats.inferMs = tracker.inferMs || 0;
   game.update(dt, tracker.hands, mapper);
   game.render(video, mapper);
 

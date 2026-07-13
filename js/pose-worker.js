@@ -61,6 +61,18 @@ async function withDownloadProgress(onBytes, run) {
   }
 }
 
+let videoW = 480;
+let videoH = 360;
+
+function scaleHand(hand, fx, fy) {
+  if (!hand) return null;
+  return {
+    elbow: { x: hand.elbow.x * fx, y: hand.elbow.y * fy },
+    wrist: { x: hand.wrist.x * fx, y: hand.wrist.y * fy },
+    score: hand.score,
+  };
+}
+
 async function initBackend(forced) {
   const chain = forced ? [forced] : ['webgl', 'wasm', 'cpu'];
   for (const name of chain) {
@@ -88,8 +100,19 @@ async function init(opts) {
   progress('Starting inference engine (worker)…', 0.18);
   try { tf.env().set('WEBGL_USE_SHAPES_UNIFORMS', true); } catch {}
   try { tf.env().set('WEBGL_FORCE_F16_TEXTURES', true); } catch {}
+  videoW = opts.videoW || 480;
+  videoH = opts.videoH || 360;
   await initBackend(opts.backend);
   log(`worker tf backend '${tf.getBackend()}' ready — ${since()}`);
+  // Log the WORKER's GPU: on some Android devices the page gets the real GPU
+  // but OffscreenCanvas WebGL in a worker silently falls back to a software
+  // rasterizer — this log is how we tell.
+  try {
+    const oc = new OffscreenCanvas(1, 1);
+    const gl = oc.getContext('webgl2') || oc.getContext('webgl');
+    const ext = gl && gl.getExtension('WEBGL_debug_renderer_info');
+    if (ext) log(`worker GPU: ${gl.getParameter(ext.UNMASKED_RENDERER_WEBGL)}`);
+  } catch { /* diagnostics only */ }
 
   progress('Loading sword-tracking model…', 0.25);
   detector = await withDownloadProgress(
@@ -156,9 +179,17 @@ onmessage = async (e) => {
     if (!detector || inferBusy) { d.bitmap.close(); return; }
     inferBusy = true;
     const t = performance.now();
+    // Frames arrive downscaled; report keypoints in original video coords.
+    const fx = videoW / d.bitmap.width;
+    const fy = videoH / d.bitmap.height;
     try {
       const poses = await detector.estimatePoses(d.bitmap);
-      postMessage({ type: 'hands', hands: extractHands(poses[0]), inferMs: performance.now() - t });
+      const hands = extractHands(poses[0]);
+      postMessage({
+        type: 'hands',
+        hands: { left: scaleHand(hands.left, fx, fy), right: scaleHand(hands.right, fx, fy) },
+        inferMs: performance.now() - t,
+      });
     } catch (err) {
       postMessage({ type: 'hands', hands: { left: null, right: null }, inferMs: 0, error: err.message });
     } finally {

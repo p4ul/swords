@@ -70,29 +70,45 @@ export function workerTrackingSupported() {
     && typeof OffscreenCanvas !== 'undefined';
 }
 
-const BACKEND_KEY = 'swordstorm_backend_v1';
-const SLOW_INFER_MS = 100;   // webgl slower than this → try wasm
+const BACKEND_KEY = 'swordstorm_backend_v2';
+const SLOW_INFER_MS = 150;   // current engine slower than this → try the other
 const BENCH_FRAMES = 40;     // frames sampled per engine
+// Downscale camera frames before transfer: MoveNet only sees a 192px crop,
+// so a 256x192 bitmap costs far less to create, transfer, and upload.
+const FRAME_W = 256;
+const FRAME_H = 192;
 
 export async function createWorkerTracker(video, onProgress = () => {}) {
   const params = new URLSearchParams(location.search);
   const forced = params.get('backend');
   if (params.has('rebench')) localStorage.removeItem(BACKEND_KEY);
-  const saved = localStorage.getItem(BACKEND_KEY);
-  const state = { hands: { left: null, right: null }, fps: 0, running: true, worker: true };
+  let stored = null;
+  try { stored = JSON.parse(localStorage.getItem(BACKEND_KEY) || 'null'); } catch {}
+
+  const state = {
+    hands: { left: null, right: null },
+    fps: 0,
+    inferMs: 0,
+    engine: '',
+    running: true,
+    worker: true,
+  };
 
   let worker = null;
+  let engine = forced || (stored && stored.engine) || 'webgl';
   let last = performance.now();
   let lastFpsLog = last;
 
-  // Auto-benchmark: with no forced/saved engine we sample webgl, hot-swap to
-  // wasm if it's slow, keep the faster engine, and persist the choice.
-  // (Which engine wins genuinely varies by device: weak GPUs lose to
-  // WASM-SIMD by large factors for a model this small.)
-  let phase = (forced || saved) ? 'fixed' : 'bench-webgl';
+  // Self-healing engine selection: every run re-measures the current engine
+  // over BENCH_FRAMES. If it's slow, hot-swap to the other engine, compare,
+  // keep the faster one, persist {engine, ms}. Never persist a choice when
+  // the alternative failed to start — a webgl-worker that silently falls
+  // back to a software rasterizer (common on Android) must not get locked in.
+  let phase = forced ? 'fixed' : 'sampling';
+  let triedOther = false;
+  const results = {};
   let sampleSum = 0;
   let sampleN = 0;
-  let webglAvg = 0;
 
   const spawn = (backend, quiet) => new Promise((resolve, reject) => {
     const w = new Worker('js/pose-worker.js');
@@ -107,10 +123,22 @@ export async function createWorkerTracker(video, onProgress = () => {}) {
     w.postMessage({ type: 'init', backend, videoW: video.videoWidth, videoH: video.videoHeight });
   });
 
+  const grabFrame = async () => {
+    try {
+      return await createImageBitmap(video, {
+        resizeWidth: FRAME_W,
+        resizeHeight: FRAME_H,
+        resizeQuality: 'low',
+      });
+    } catch {
+      return createImageBitmap(video); // older browsers: no resize options
+    }
+  };
+
   const sendFrame = async () => {
     if (!state.running) { if (worker) worker.terminate(); return; }
     try {
-      const bitmap = await createImageBitmap(video);
+      const bitmap = await grabFrame();
       worker.postMessage({ type: 'frame', bitmap }, [bitmap]);
     } catch {
       setTimeout(sendFrame, 100); // camera frame not available yet
@@ -123,14 +151,15 @@ export async function createWorkerTracker(video, onProgress = () => {}) {
     state.fps = state.fps * 0.9 + (1000 / Math.max(1, now - last)) * 0.1;
     last = now;
     state.hands = d.hands;
+    if (d.inferMs > 0) state.inferMs = state.inferMs * 0.9 + d.inferMs * 0.1;
     if (now - lastFpsLog > 30000) {
       lastFpsLog = now;
-      log(`pose tracking (worker) ~${state.fps.toFixed(0)} fps (inference ${Math.round(d.inferMs)} ms)`);
+      log(`pose tracking (worker/${engine}) ~${state.fps.toFixed(0)} fps (inference ${Math.round(state.inferMs)} ms)`);
     }
-    if (phase !== 'fixed' && d.inferMs > 0) {
+    if (phase === 'sampling' && d.inferMs > 0) {
       sampleSum += d.inferMs;
       sampleN += 1;
-      if (sampleN >= BENCH_FRAMES) evaluateBenchmark();
+      if (sampleN >= BENCH_FRAMES) evaluateSample();
     }
     sendFrame();
   };
@@ -151,6 +180,8 @@ export async function createWorkerTracker(video, onProgress = () => {}) {
       old.onmessage = null;
       old.terminate();
       worker = w2;
+      engine = backend;
+      state.engine = backend;
       attach(w2);
       sampleSum = 0;
       sampleN = 0;
@@ -162,36 +193,44 @@ export async function createWorkerTracker(video, onProgress = () => {}) {
     }
   };
 
-  const evaluateBenchmark = () => {
+  const evaluateSample = () => {
     const avg = sampleSum / sampleN;
-    if (phase === 'bench-webgl') {
-      if (avg > SLOW_INFER_MS) {
-        webglAvg = avg;
-        phase = 'bench-wasm';
-        log(`webgl inference slow (${avg.toFixed(0)} ms avg) — benchmarking wasm engine…`);
-        swapTo('wasm').then((ok) => { if (!ok) { phase = 'fixed'; localStorage.setItem(BACKEND_KEY, 'webgl'); } });
-      } else {
-        phase = 'fixed';
-        localStorage.setItem(BACKEND_KEY, 'webgl');
-        log(`webgl engine confirmed (${avg.toFixed(0)} ms avg inference)`);
+    results[engine] = avg;
+    sampleSum = 0;
+    sampleN = 0;
+    if (avg <= SLOW_INFER_MS || triedOther) {
+      let best = engine;
+      for (const [name, ms] of Object.entries(results)) {
+        if (ms < results[best]) best = name;
       }
-    } else if (phase === 'bench-wasm') {
       phase = 'fixed';
-      if (avg < webglAvg * 0.85) {
-        localStorage.setItem(BACKEND_KEY, 'wasm');
-        log(`wasm engine wins (${avg.toFixed(0)} ms vs ${webglAvg.toFixed(0)} ms) — saved for future runs`);
+      try {
+        localStorage.setItem(BACKEND_KEY, JSON.stringify({ engine: best, ms: Math.round(results[best]) }));
+      } catch {}
+      if (best !== engine) {
+        log(`${best} engine wins (${results[best].toFixed(0)} ms vs ${avg.toFixed(0)} ms) — switching`);
+        swapTo(best);
       } else {
-        localStorage.setItem(BACKEND_KEY, 'webgl');
-        log(`webgl engine wins (${webglAvg.toFixed(0)} ms vs ${avg.toFixed(0)} ms) — switching back`);
-        swapTo('webgl');
+        log(`${engine} engine confirmed (${avg.toFixed(0)} ms avg inference)`);
       }
+    } else {
+      triedOther = true;
+      const other = engine === 'webgl' ? 'wasm' : 'webgl';
+      log(`${engine} inference slow (${avg.toFixed(0)} ms avg) — benchmarking ${other} engine…`);
+      swapTo(other).then((ok) => {
+        if (!ok) {
+          phase = 'fixed'; // stay on what works; do NOT persist — retry next run
+          log(`staying on ${engine} (${other} unavailable)`);
+        }
+      });
     }
   };
 
-  worker = await spawn(forced || saved || 'webgl', false);
+  worker = await spawn(engine, false);
+  state.engine = engine;
   attach(worker);
   sendFrame();
-  log(`pose tracking running in worker thread (${forced || saved || 'webgl'}) — renderer unblocked`);
+  log(`pose tracking running in worker thread (${engine}) — renderer unblocked`);
   return state;
 }
 
@@ -300,6 +339,8 @@ export async function createTracker(video, onProgress = () => {}) {
   const state = {
     hands: { left: null, right: null },
     fps: 0,
+    inferMs: 0,
+    engine: `${tf.getBackend()} (main thread)`,
     running: true,
   };
 
@@ -312,6 +353,7 @@ export async function createTracker(video, onProgress = () => {}) {
         const t = performance.now();
         const poses = await detector.estimatePoses(video);
         inferMs = performance.now() - t;
+        state.inferMs = state.inferMs * 0.9 + inferMs * 0.1;
         const now = performance.now();
         state.fps = state.fps * 0.9 + (1000 / Math.max(1, now - last)) * 0.1;
         last = now;

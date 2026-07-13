@@ -562,8 +562,11 @@ export class Game {
     ctx.textAlign = 'center';
     ctx.font = `600 ${Math.max(13, w * 0.012)}px 'Segoe UI', sans-serif`;
     ctx.fillStyle = 'rgba(255,255,255,0.75)';
+    const engineInfo = this.stats.engine
+      ? ` · ${this.stats.engine.toUpperCase()} ${Math.round(this.stats.inferMs || 0)}ms`
+      : '';
     ctx.fillText(
-      `${Math.round(this.stats.render)} FPS · POSE ${Math.round(this.stats.pose)}`,
+      `${Math.round(this.stats.render)} FPS · POSE ${Math.round(this.stats.pose)}${engineInfo}`,
       w / 2, pad,
     );
     ctx.restore();

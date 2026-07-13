@@ -1,7 +1,7 @@
 // Minimal service worker: cache the app shell so the game loads fast on
 // repeat visits. Model weights and TF.js come from CDNs and are cached
 // with a stale-while-revalidate strategy.
-const CACHE = 'swordstorm-v8';
+const CACHE = 'swordstorm-v9';
 const SHELL = [
   '.',
   'index.html',
