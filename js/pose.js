@@ -79,6 +79,12 @@ export async function createTracker(video, onProgress = () => {}) {
   }
   await tf.ready();
   log(`tf backend '${tf.getBackend()}' ready — ${since()}`);
+  try {
+    const gl = document.createElement('canvas').getContext('webgl2')
+      || document.createElement('canvas').getContext('webgl');
+    const ext = gl && gl.getExtension('WEBGL_debug_renderer_info');
+    if (ext) log('GPU:', gl.getParameter(ext.UNMASKED_RENDERER_WEBGL));
+  } catch { /* diagnostics only */ }
 
   onProgress('Loading sword-tracking model…', 0.25);
   // Model weights are vendored with the app (no TF Hub / Kaggle fetch —
@@ -107,30 +113,43 @@ export async function createTracker(video, onProgress = () => {}) {
   //    shaders compile on GPU driver threads while we await, so the page stays
   //    responsive. Falls back to the plain blocking warm-up if unsupported.
   if (tf.getBackend() === 'webgl') {
-    let warmupInput = null;
-    try {
-      const backend = tf.backend();
-      if (typeof backend.checkCompileCompletionAsync === 'function') {
-        // Use a zeros tensor, NOT the video: fromPixels must not run in
-        // compile-only mode (it skips the texture upload and poisons the
-        // pipeline for subsequent real frames).
-        warmupInput = tf.zeros([video.videoHeight || 480, video.videoWidth || 640, 3], 'int32');
+    const backend = tf.backend();
+    if (typeof backend.checkCompileCompletionAsync === 'function') {
+      // Use a zeros tensor, NOT the video: fromPixels must not run in
+      // compile-only mode (it skips the texture upload and poisons the
+      // pipeline for subsequent real frames).
+      const warmupInput = tf.zeros([video.videoHeight || 480, video.videoWidth || 640, 3], 'int32');
+      try {
         tf.env().set('ENGINE_COMPILE_ONLY', true);
         await detector.estimatePoses(warmupInput);
         tf.env().set('ENGINE_COMPILE_ONLY', false);
-        // Documented sequence: wait for the driver's parallel compile, then
-        // cache uniform locations — without this the compiled programs are
-        // unusable (null uniform arrays on the first real inference).
-        await backend.checkCompileCompletionAsync();
+        // Wait for the driver's parallel (background-thread) compile, but cap
+        // it at 20 s — on some drivers this poll never resolves, which froze
+        // loading at 88%. IMPORTANT: only this wait may be raced; once
+        // compile-only programs exist, getUniformLocations() below is
+        // mandatory before any real inference (it also blocks until the
+        // driver finishes linking, so it doubles as the synchronous
+        // fallback when the async poll times out).
+        const done = await Promise.race([
+          backend.checkCompileCompletionAsync().then(() => true),
+          new Promise((resolve) => setTimeout(() => resolve(false), 20000)),
+        ]);
+        if (!done) {
+          log('parallel compile poll timed out after 20 s — finishing synchronously (screen may pause)');
+          onProgress('Compiling GPU shaders (slow path)…', 0.92);
+          await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(r, 30))));
+        }
         if (typeof backend.getUniformLocations === 'function') backend.getUniformLocations();
         if (typeof detector.reset === 'function') detector.reset();
-        log(`shaders compiled in parallel (page stayed responsive) — ${since()}`);
+        log(`shaders compiled ${done ? 'in parallel (page stayed responsive)' : 'via synchronous fallback'} — ${since()}`);
+      } catch (err) {
+        try { tf.env().set('ENGINE_COMPILE_ONLY', false); } catch {}
+        log('parallel shader compile failed, using blocking warm-up:', err.message);
+      } finally {
+        warmupInput.dispose();
       }
-    } catch (err) {
-      try { tf.env().set('ENGINE_COMPILE_ONLY', false); } catch {}
-      log('parallel shader compile unavailable, using blocking warm-up:', err.message);
-    } finally {
-      if (warmupInput) warmupInput.dispose();
+    } else {
+      log('parallel shader compile unsupported, using blocking warm-up');
     }
   }
   await detector.estimatePoses(video);

@@ -14,10 +14,17 @@ function showPanel(name) {
   if (!name) for (const el of Object.values(panels)) el.classList.add('hidden');
 }
 
+const BUILD = 'v5';
+
 const log = (...args) => console.log('[SwordStorm]', ...args);
+log(`build ${BUILD}`);
+const buildTag = document.getElementById('buildTag');
+if (buildTag) buildTag.textContent = `build ${BUILD}`;
 
 // Loading-screen progress: message + overall fraction, mirrored to console.
+let lastProgressAt = Date.now();
 function setProgress(msg, frac) {
+  lastProgressAt = Date.now();
   if (msg) $('loadMsg').textContent = msg;
   if (frac != null) {
     const pct = Math.round(frac * 100);
@@ -25,6 +32,24 @@ function setProgress(msg, frac) {
     $('loadPct').textContent = `${pct}%`;
   }
   if (msg) log(frac != null ? `${msg} (${Math.round(frac * 100)}%)` : msg);
+}
+
+// Watchdog that fires only when initialization STALLS (no progress event for
+// 60 s) — a slow device that is still making progress never times out.
+let watchdogTimer = null;
+function stallWatchdog() {
+  lastProgressAt = Date.now();
+  return new Promise((_, reject) => {
+    watchdogTimer = setInterval(() => {
+      if (Date.now() - lastProgressAt > 60000) {
+        clearInterval(watchdogTimer);
+        reject(new Error('Loading stalled (no progress for 60 s). Close this tab fully and reopen the page. If it keeps happening, your browser may lack WebGL acceleration — try ?backend=cpu.'));
+      }
+    }, 5000);
+  });
+}
+function stopWatchdog() {
+  if (watchdogTimer) { clearInterval(watchdogTimer); watchdogTimer = null; }
 }
 
 function resize() {
@@ -81,7 +106,31 @@ function createMockTracker() {
   };
 }
 
+// One shared init attempt: double-taps on START and retries after a watchdog
+// error re-attach to the SAME in-flight initialization instead of spawning a
+// second detector that contends with the first (that produced "pose tracking"
+// console logs from an orphaned init while the visible one appeared stuck).
+let initPromise = null;
+function ensureTracker() {
+  if (!initPromise) {
+    initPromise = (async () => {
+      setProgress('Requesting camera…', 0.03);
+      await openCamera(video);
+      setProgress('Camera ready', 0.15);
+      return createTracker(video, setProgress);
+    })().catch((err) => {
+      initPromise = null; // real failure — allow a fresh attempt on retry
+      throw err;
+    });
+  }
+  return initPromise;
+}
+
+let starting = false;
+
 async function start() {
+  if (starting || running) return; // ignore double-taps
+  starting = true;
   sfx.unlockAudio();
   showPanel('loading');
   setProgress('Starting…', 0);
@@ -93,27 +142,21 @@ async function start() {
         log('mock mode — synthetic arms, no camera or model');
         tracker = createMockTracker();
       } else {
-        setProgress('Requesting camera…', 0.03);
-        await openCamera(video);
-        setProgress('Camera ready', 0.15);
-        // Watchdog: initialization should take a few seconds at most now
-        // that the model ships with the app — never hang the loading screen.
-        tracker = await Promise.race([
-          createTracker(video, setProgress),
-          new Promise((_, reject) => setTimeout(
-            () => reject(new Error('Initialization timed out. Close this tab fully and reopen the page — a stale cached version may be loaded.')),
-            90000,
-          )),
-        ]);
+        tracker = await Promise.race([ensureTracker(), stallWatchdog()]);
       }
     }
   } catch (err) {
     console.error('[SwordStorm] init failed:', err);
     $('errMsg').textContent = err.name === 'NotAllowedError'
       ? 'Camera access was denied. The game needs the front camera to track your sword arms — allow camera access and reload.'
-      : `Could not start: ${err.message}. The page must be served over HTTPS (or localhost) for camera access.`;
+      : err.message.includes('stalled')
+        ? err.message
+        : `Could not start: ${err.message}. The page must be served over HTTPS (or localhost) for camera access.`;
     showPanel('error');
     return;
+  } finally {
+    starting = false;
+    stopWatchdog();
   }
 
   showPanel(null);
