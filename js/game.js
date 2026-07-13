@@ -92,6 +92,7 @@ class Sword {
   fadeTrail(dt) {
     for (const t of this.trail) t.age += dt;
     this.trail = this.trail.filter((t) => t.age < TRAIL_LIFE);
+    if (this.trail.length > 18) this.trail.splice(0, this.trail.length - 18);
   }
 
   // Does this frame's blade sweep pass within `radius` of (x, y)?
@@ -159,11 +160,56 @@ class Enemy {
 
 // ---------------------------------------------------------------- game
 
+// Pre-rendered enemy sprites: the aura + body gradients and horns are baked
+// once per type instead of building radial gradients per enemy per frame
+// (a major mobile-canvas cost). Eyes/mouth stay dynamic — they're cheap paths.
+const SPRITE_R = 64; // enemy radius inside the baked sprite
+
+function bakeEnemySprite(hue, lightness) {
+  const c = document.createElement('canvas');
+  const size = SPRITE_R * 5; // room for aura (1.8r) and horns (~1.5r above)
+  c.width = c.height = size;
+  const g = c.getContext('2d');
+  g.translate(size / 2, size / 2);
+  const r = SPRITE_R;
+
+  const glow = g.createRadialGradient(0, 0, r * 0.3, 0, 0, r * 1.8);
+  glow.addColorStop(0, `hsla(${hue}, 95%, 65%, 0.55)`);
+  glow.addColorStop(1, `hsla(${hue}, 95%, 65%, 0)`);
+  g.fillStyle = glow;
+  g.beginPath();
+  g.arc(0, 0, r * 1.8, 0, Math.PI * 2);
+  g.fill();
+
+  const body = g.createRadialGradient(-r * 0.3, -r * 0.3, r * 0.1, 0, 0, r);
+  body.addColorStop(0, `hsl(${hue}, 85%, ${lightness}%)`);
+  body.addColorStop(1, `hsl(${hue}, 80%, 28%)`);
+  g.fillStyle = body;
+  g.beginPath();
+  g.arc(0, 0, r, 0, Math.PI * 2);
+  g.fill();
+
+  g.fillStyle = `hsl(${hue}, 60%, 20%)`;
+  for (const s of [-1, 1]) {
+    g.beginPath();
+    g.moveTo(s * r * 0.45, -r * 0.75);
+    g.quadraticCurveTo(s * r * 0.85, -r * 1.5, s * r * 0.35, -r * 1.25);
+    g.quadraticCurveTo(s * r * 0.4, -r * 1.0, s * r * 0.15, -r * 0.9);
+    g.fill();
+  }
+  return c;
+}
+
 export class Game {
   constructor(canvas) {
     this.canvas = canvas;
     this.ctx = canvas.getContext('2d');
     this.swords = [new Sword('#7df9ff'), new Sword('#ffb84d')];
+    this.sprites = { flash: bakeEnemySprite(55, 85) };
+    for (const [type, spec] of Object.entries(ENEMY_TYPES)) {
+      this.sprites[type] = bakeEnemySprite(spec.hue, 62);
+    }
+    this.stats = { render: 0, pose: 0 };
     this.reset();
   }
 
@@ -285,6 +331,7 @@ export class Game {
   }
 
   spawnSparks(enemy, sword, diag) {
+    if (this.particles.length > 140) return; // particle budget
     const dx = sword.tip.x - (sword.prevTip ? sword.prevTip.x : sword.tip.x);
     const dy = sword.tip.y - (sword.prevTip ? sword.prevTip.y : sword.tip.y);
     const mag = Math.max(1, Math.hypot(dx, dy));
@@ -360,39 +407,16 @@ export class Game {
     const r = e.radius(diag);
     const depth = 1 - e.z;
     const alpha = Math.min(1, depth * 3);
-    const hue = e.hitFlash > 0 ? 55 : e.spec.hue;
 
     ctx.save();
     ctx.globalAlpha = alpha;
     ctx.translate(e.x, e.y);
 
-    // Aura
-    const glow = ctx.createRadialGradient(0, 0, r * 0.3, 0, 0, r * 1.8);
-    glow.addColorStop(0, `hsla(${hue}, 95%, 65%, 0.55)`);
-    glow.addColorStop(1, `hsla(${hue}, 95%, 65%, 0)`);
-    ctx.fillStyle = glow;
-    ctx.beginPath();
-    ctx.arc(0, 0, r * 1.8, 0, Math.PI * 2);
-    ctx.fill();
-
-    // Body
-    const body = ctx.createRadialGradient(-r * 0.3, -r * 0.3, r * 0.1, 0, 0, r);
-    body.addColorStop(0, `hsl(${hue}, 85%, ${e.hitFlash > 0 ? 85 : 62}%)`);
-    body.addColorStop(1, `hsl(${hue}, 80%, 28%)`);
-    ctx.fillStyle = body;
-    ctx.beginPath();
-    ctx.arc(0, 0, r, 0, Math.PI * 2);
-    ctx.fill();
-
-    // Horns
-    ctx.fillStyle = `hsl(${hue}, 60%, 20%)`;
-    for (const s of [-1, 1]) {
-      ctx.beginPath();
-      ctx.moveTo(s * r * 0.45, -r * 0.75);
-      ctx.quadraticCurveTo(s * r * 0.85, -r * 1.5, s * r * 0.35, -r * 1.25);
-      ctx.quadraticCurveTo(s * r * 0.4, -r * 1.0, s * r * 0.15, -r * 0.9);
-      ctx.fill();
-    }
+    // Aura + body + horns from the pre-baked sprite.
+    const sprite = e.hitFlash > 0 ? this.sprites.flash : this.sprites[e.type];
+    const scale = r / SPRITE_R;
+    const w = sprite.width * scale;
+    ctx.drawImage(sprite, -w / 2, -w / 2, w, w);
 
     // Eyes — angrier as they get closer.
     const squint = depth * r * 0.12;
@@ -463,27 +487,24 @@ export class Game {
     if (!sword.visible) return;
     const { base, tip } = sword;
 
-    // Blade glow
+    // Blade: layered strokes fake the glow — shadowBlur is far too slow on
+    // mobile canvases to use per frame.
     ctx.save();
     ctx.globalCompositeOperation = 'lighter';
-    ctx.strokeStyle = hexWithAlpha(sword.color, sword.hot ? 0.9 : 0.45);
-    ctx.lineWidth = sword.hot ? 16 : 10;
     ctx.lineCap = 'round';
-    ctx.shadowColor = sword.color;
-    ctx.shadowBlur = sword.hot ? 30 : 12;
-    ctx.beginPath();
-    ctx.moveTo(base.x, base.y);
-    ctx.lineTo(tip.x, tip.y);
-    ctx.stroke();
-
-    // Bright core
-    ctx.strokeStyle = 'rgba(255,255,255,0.95)';
-    ctx.lineWidth = sword.hot ? 5 : 3;
-    ctx.shadowBlur = 0;
-    ctx.beginPath();
-    ctx.moveTo(base.x, base.y);
-    ctx.lineTo(tip.x, tip.y);
-    ctx.stroke();
+    const passes = sword.hot
+      ? [[26, 0.10], [14, 0.30], [5, 0]]
+      : [[16, 0.08], [9, 0.22], [3, 0]];
+    for (const [width, glowAlpha] of passes) {
+      ctx.strokeStyle = glowAlpha > 0
+        ? hexWithAlpha(sword.color, glowAlpha)
+        : 'rgba(255,255,255,0.95)';
+      ctx.lineWidth = width;
+      ctx.beginPath();
+      ctx.moveTo(base.x, base.y);
+      ctx.lineTo(tip.x, tip.y);
+      ctx.stroke();
+    }
     ctx.restore();
 
     // Hilt at the wrist
@@ -526,18 +547,26 @@ export class Game {
     }
     ctx.globalAlpha = 1;
 
-    // Score + wave
+    // Score + wave (no shadowBlur — too slow on mobile canvases)
     ctx.textAlign = 'right';
     ctx.fillStyle = '#ffd76e';
     ctx.font = `700 ${Math.max(22, w * 0.026)}px 'Segoe UI', sans-serif`;
-    ctx.shadowColor = 'rgba(0,0,0,0.8)';
-    ctx.shadowBlur = 6;
     ctx.fillText(String(this.score).padStart(6, '0'), w - pad, pad);
     ctx.fillStyle = '#c9b8ee';
     ctx.font = `600 ${Math.max(14, w * 0.015)}px 'Segoe UI', sans-serif`;
     ctx.fillText(`WAVE ${this.wave} · ${this.waveKills}/${this.waveTarget}`, w - pad, pad + Math.max(28, w * 0.032));
-    ctx.shadowBlur = 0;
     ctx.textAlign = 'left';
+
+    // FPS readout, top-center: render fps + pose-tracking fps.
+    ctx.save();
+    ctx.textAlign = 'center';
+    ctx.font = `600 ${Math.max(13, w * 0.012)}px 'Segoe UI', sans-serif`;
+    ctx.fillStyle = 'rgba(255,255,255,0.75)';
+    ctx.fillText(
+      `${Math.round(this.stats.render)} FPS · POSE ${Math.round(this.stats.pose)}`,
+      w / 2, pad,
+    );
+    ctx.restore();
 
     // Combo
     if (this.combo > 1 && this.comboT > 0) {
@@ -546,8 +575,6 @@ export class Game {
       const pop = 1 + Math.min(0.4, (this.comboT > 1.4 ? (this.comboT - 1.4) * 3 : 0));
       ctx.font = `800 ${Math.max(30, w * 0.04) * pop}px 'Segoe UI', sans-serif`;
       ctx.fillStyle = `hsla(${45 + this.combo * 8}, 100%, 65%, ${Math.min(1, this.comboT)})`;
-      ctx.shadowColor = 'rgba(0,0,0,0.7)';
-      ctx.shadowBlur = 8;
       ctx.fillText(`${this.combo}× COMBO`, w / 2, h * 0.14);
       ctx.restore();
     }
@@ -558,9 +585,9 @@ export class Game {
       ctx.textAlign = 'center';
       ctx.globalAlpha = Math.min(1, this.waveBannerT);
       ctx.font = `800 ${Math.max(40, w * 0.06)}px 'Segoe UI', sans-serif`;
+      ctx.fillStyle = 'rgba(90, 40, 160, 0.85)';
+      ctx.fillText(`WAVE ${this.wave}`, w / 2 + 3, h * 0.4 + 3);
       ctx.fillStyle = '#fff';
-      ctx.shadowColor = 'rgba(150, 80, 255, 0.9)';
-      ctx.shadowBlur = 24;
       ctx.fillText(`WAVE ${this.wave}`, w / 2, h * 0.4);
       ctx.restore();
     }
@@ -572,8 +599,6 @@ export class Game {
       ctx.globalAlpha = 0.6 + 0.4 * Math.sin(this.time * 3);
       ctx.font = `600 ${Math.max(16, w * 0.018)}px 'Segoe UI', sans-serif`;
       ctx.fillStyle = '#fff';
-      ctx.shadowColor = 'rgba(0,0,0,0.8)';
-      ctx.shadowBlur = 6;
       ctx.fillText('Step back so the camera can see your arms 🙌', w / 2, h * 0.85);
       ctx.restore();
     }

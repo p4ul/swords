@@ -15,8 +15,10 @@ export async function openCamera(video) {
     audio: false,
     video: {
       facingMode: 'user',
-      width: { ideal: 640 },
-      height: { ideal: 480 },
+      // MoveNet only sees a 192x192 crop internally — 480x360 capture keeps
+      // the per-frame GPU upload (fromPixels) cheap with no tracking loss.
+      width: { ideal: 480 },
+      height: { ideal: 360 },
     },
   });
   video.srcObject = stream;
@@ -68,6 +70,9 @@ export async function createTracker(video, onProgress = () => {}) {
   onProgress('Starting GPU backend…', 0.18);
   // Fewer shader variants = much faster first-run compile on mobile GPUs.
   try { tf.env().set('WEBGL_USE_SHAPES_UNIFORMS', true); } catch {}
+  // Half-float textures: ~2x faster on mobile GPUs, plenty of precision for
+  // pose keypoints.
+  try { tf.env().set('WEBGL_FORCE_F16_TEXTURES', true); } catch {}
   // ?backend=cpu overrides (debug / broken-WebGL devices); otherwise try
   // WebGL and fall back to CPU rather than failing outright.
   const forced = new URLSearchParams(location.search).get('backend');
@@ -168,15 +173,18 @@ export async function createTracker(video, onProgress = () => {}) {
   let lastFpsLog = performance.now();
   (async function loop() {
     while (state.running) {
+      let inferMs = 0;
       try {
+        const t = performance.now();
         const poses = await detector.estimatePoses(video);
+        inferMs = performance.now() - t;
         const now = performance.now();
         state.fps = state.fps * 0.9 + (1000 / Math.max(1, now - last)) * 0.1;
         last = now;
         state.hands = extractHands(poses[0]);
         if (now - lastFpsLog > 30000) {
           lastFpsLog = now;
-          log(`pose tracking ~${state.fps.toFixed(0)} fps`);
+          log(`pose tracking ~${state.fps.toFixed(0)} fps (inference ${inferMs.toFixed(0)} ms)`);
         }
       } catch (err) {
         // Transient inference hiccup — keep last known hands and retry.
@@ -189,6 +197,12 @@ export async function createTracker(video, onProgress = () => {}) {
       // logs flow, the game "starts") but the screen stays frozen on the
       // last painted frame (the 88% loading panel).
       await tf.nextFrame();
+      // Adaptive throttle: inference shares the main thread with the game
+      // renderer, so give rendering breathing room proportional to how
+      // expensive inference is on this device. Fast GPU → no idle, pose runs
+      // at full rate; slow GPU → pose rate drops so gameplay stays smooth.
+      const idle = Math.min(90, inferMs * 0.9);
+      if (idle > 8) await new Promise((r) => setTimeout(r, idle));
     }
   })();
 

@@ -14,7 +14,7 @@ function showPanel(name) {
   if (!name) for (const el of Object.values(panels)) el.classList.add('hidden');
 }
 
-const BUILD = 'v6';
+const BUILD = 'v7';
 
 const log = (...args) => console.log('[SwordStorm]', ...args);
 log(`build ${BUILD}`);
@@ -53,8 +53,14 @@ function stopWatchdog() {
 }
 
 function resize() {
-  canvas.width = window.innerWidth * (window.devicePixelRatio > 1.5 ? 1.5 : window.devicePixelRatio);
-  canvas.height = window.innerHeight * (window.devicePixelRatio > 1.5 ? 1.5 : window.devicePixelRatio);
+  // Cap the backing store to a fixed pixel budget — canvas fill rate is a
+  // primary cost on tablets and full devicePixelRatio buys little here.
+  const dpr = Math.min(window.devicePixelRatio || 1, 1.5);
+  const MAX_PIXELS = 1300000;
+  const area = window.innerWidth * window.innerHeight * dpr * dpr;
+  const scale = area > MAX_PIXELS ? dpr * Math.sqrt(MAX_PIXELS / area) : dpr;
+  canvas.width = Math.round(window.innerWidth * scale);
+  canvas.height = Math.round(window.innerHeight * scale);
   canvas.style.width = '100%';
   canvas.style.height = '100%';
 }
@@ -167,16 +173,25 @@ async function start() {
 }
 
 let lastT = 0;
+let renderFps = 0;
+let lastFpsLog = 0;
 function frame(t) {
   if (!running) return;
   const dt = Math.min(0.05, (t - lastT) / 1000 || 0.016);
   lastT = t;
+  renderFps = renderFps * 0.92 + (1 / Math.max(0.001, dt)) * 0.08;
+  if (t - lastFpsLog > 30000) {
+    lastFpsLog = t;
+    log(`render ~${renderFps.toFixed(0)} fps, pose ~${(tracker.fps || 0).toFixed(0)} fps`);
+  }
 
   const mapper = makeMapper(
     video.videoWidth || 640, video.videoHeight || 480,
     canvas.width, canvas.height,
   );
 
+  game.stats.render = renderFps;
+  game.stats.pose = tracker.fps || 0;
   game.update(dt, tracker.hands, mapper);
   game.render(video, mapper);
 
