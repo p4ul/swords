@@ -14,7 +14,7 @@ function showPanel(name) {
   if (!name) for (const el of Object.values(panels)) el.classList.add('hidden');
 }
 
-const BUILD = 'v5';
+const BUILD = 'v6';
 
 const log = (...args) => console.log('[SwordStorm]', ...args);
 log(`build ${BUILD}`);

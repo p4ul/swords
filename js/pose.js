@@ -183,6 +183,12 @@ export async function createTracker(video, onProgress = () => {}) {
         log('inference hiccup (retrying):', err.message);
         await new Promise((r) => setTimeout(r, 100));
       }
+      // CRITICAL: yield a real display frame between inferences. Awaits that
+      // resolve as microtasks never give the browser a chance to paint, so
+      // without this the loop starves rendering — JS keeps running (console
+      // logs flow, the game "starts") but the screen stays frozen on the
+      // last painted frame (the 88% loading panel).
+      await tf.nextFrame();
     }
   })();
 
