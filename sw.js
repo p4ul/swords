@@ -1,7 +1,7 @@
 // Minimal service worker: cache the app shell so the game loads fast on
 // repeat visits. Model weights and TF.js come from CDNs and are cached
 // with a stale-while-revalidate strategy.
-const CACHE = 'swordstorm-v7';
+const CACHE = 'swordstorm-v8';
 const SHELL = [
   '.',
   'index.html',
@@ -10,8 +10,13 @@ const SHELL = [
   'manifest.webmanifest',
   'js/main.js',
   'js/pose.js',
+  'js/pose-worker.js',
   'js/game.js',
   'js/audio.js',
+  'vendor/wasm/tf-backend-wasm.min.js',
+  'vendor/wasm/tfjs-backend-wasm.wasm',
+  'vendor/wasm/tfjs-backend-wasm-simd.wasm',
+  'vendor/wasm/tfjs-backend-wasm-threaded-simd.wasm',
   'vendor/tf.min.js',
   'vendor/pose-detection.min.js',
   'vendor/movenet/movenet-lightning.json',

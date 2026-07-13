@@ -74,6 +74,13 @@ can whitelist your dev machine's origin (dev only).
   library, **and the MoveNet model weights** are all vendored in `vendor/` —
   zero external fetches at play time, so it works on locked-down networks
   and fully offline once the service worker has cached the app.
+- **Inference runs in a Web Worker** (`js/pose-worker.js`), fully off the
+  main thread, so the renderer keeps its entire frame budget. The game
+  auto-benchmarks WebGL vs WASM-SIMD inference on your device, hot-swaps to
+  the faster engine, and remembers the choice (`?backend=webgl|wasm|cpu`
+  forces one; `?rebench` clears the remembered choice; `?noworker` forces
+  the in-thread fallback path). An FPS readout (render + pose rates) sits
+  top-center during play.
 - **Debug mode:** append `?mock=1` to the URL to play without a camera —
   the swords are driven by synthetic swinging arms. Handy for tuning
   gameplay on a laptop.

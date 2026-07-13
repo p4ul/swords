@@ -1,6 +1,6 @@
 // Boot / app state machine: menu → loading → playing → game over.
 
-import { openCamera, createTracker, makeMapper } from './pose.js';
+import { openCamera, createTracker, createWorkerTracker, workerTrackingSupported, makeMapper } from './pose.js';
 import { Game } from './game.js';
 import * as sfx from './audio.js';
 
@@ -14,7 +14,7 @@ function showPanel(name) {
   if (!name) for (const el of Object.values(panels)) el.classList.add('hidden');
 }
 
-const BUILD = 'v7';
+const BUILD = 'v8';
 
 const log = (...args) => console.log('[SwordStorm]', ...args);
 log(`build ${BUILD}`);
@@ -123,6 +123,16 @@ function ensureTracker() {
       setProgress('Requesting camera…', 0.03);
       await openCamera(video);
       setProgress('Camera ready', 0.15);
+      // Prefer the worker tracker (inference off the main thread); ?noworker
+      // forces the in-thread path for debugging.
+      const noWorker = new URLSearchParams(location.search).has('noworker');
+      if (!noWorker && workerTrackingSupported()) {
+        try {
+          return await createWorkerTracker(video, setProgress);
+        } catch (err) {
+          log('worker tracker failed, falling back to main thread:', err.message);
+        }
+      }
       return createTracker(video, setProgress);
     })().catch((err) => {
       initPromise = null; // real failure — allow a fresh attempt on retry

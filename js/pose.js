@@ -61,6 +61,140 @@ async function withDownloadProgress(onBytes, run) {
   }
 }
 
+// Preferred tracker: inference in a Web Worker, completely off the main
+// thread — the game renderer keeps its whole frame budget. Falls back to
+// createTracker (below) if workers/ImageBitmap aren't available.
+export function workerTrackingSupported() {
+  return typeof Worker !== 'undefined'
+    && typeof createImageBitmap === 'function'
+    && typeof OffscreenCanvas !== 'undefined';
+}
+
+const BACKEND_KEY = 'swordstorm_backend_v1';
+const SLOW_INFER_MS = 100;   // webgl slower than this → try wasm
+const BENCH_FRAMES = 40;     // frames sampled per engine
+
+export async function createWorkerTracker(video, onProgress = () => {}) {
+  const params = new URLSearchParams(location.search);
+  const forced = params.get('backend');
+  if (params.has('rebench')) localStorage.removeItem(BACKEND_KEY);
+  const saved = localStorage.getItem(BACKEND_KEY);
+  const state = { hands: { left: null, right: null }, fps: 0, running: true, worker: true };
+
+  let worker = null;
+  let last = performance.now();
+  let lastFpsLog = last;
+
+  // Auto-benchmark: with no forced/saved engine we sample webgl, hot-swap to
+  // wasm if it's slow, keep the faster engine, and persist the choice.
+  // (Which engine wins genuinely varies by device: weak GPUs lose to
+  // WASM-SIMD by large factors for a model this small.)
+  let phase = (forced || saved) ? 'fixed' : 'bench-webgl';
+  let sampleSum = 0;
+  let sampleN = 0;
+  let webglAvg = 0;
+
+  const spawn = (backend, quiet) => new Promise((resolve, reject) => {
+    const w = new Worker('js/pose-worker.js');
+    w.onmessage = (e) => {
+      const d = e.data;
+      if (d.type === 'progress' && !quiet) onProgress(d.msg, d.frac);
+      else if (d.type === 'log') log(d.msg);
+      else if (d.type === 'ready') resolve(w);
+      else if (d.type === 'error') { w.terminate(); reject(new Error(d.message)); }
+    };
+    w.onerror = (e) => { w.terminate(); reject(new Error(`worker failed: ${e.message || 'script error'}`)); };
+    w.postMessage({ type: 'init', backend, videoW: video.videoWidth, videoH: video.videoHeight });
+  });
+
+  const sendFrame = async () => {
+    if (!state.running) { if (worker) worker.terminate(); return; }
+    try {
+      const bitmap = await createImageBitmap(video);
+      worker.postMessage({ type: 'frame', bitmap }, [bitmap]);
+    } catch {
+      setTimeout(sendFrame, 100); // camera frame not available yet
+    }
+  };
+
+  const onHands = (d) => {
+    if (d.error) log('worker inference error:', d.error);
+    const now = performance.now();
+    state.fps = state.fps * 0.9 + (1000 / Math.max(1, now - last)) * 0.1;
+    last = now;
+    state.hands = d.hands;
+    if (now - lastFpsLog > 30000) {
+      lastFpsLog = now;
+      log(`pose tracking (worker) ~${state.fps.toFixed(0)} fps (inference ${Math.round(d.inferMs)} ms)`);
+    }
+    if (phase !== 'fixed' && d.inferMs > 0) {
+      sampleSum += d.inferMs;
+      sampleN += 1;
+      if (sampleN >= BENCH_FRAMES) evaluateBenchmark();
+    }
+    sendFrame();
+  };
+
+  const attach = (w) => {
+    w.onmessage = (e) => {
+      const d = e.data;
+      if (d.type === 'log') log(d.msg);
+      else if (d.type === 'hands') onHands(d);
+    };
+    w.onerror = (e) => log('worker error:', e.message || 'script error');
+  };
+
+  const swapTo = async (backend) => {
+    try {
+      const w2 = await spawn(backend, true); // model is SW-cached: fast init
+      const old = worker;
+      old.onmessage = null;
+      old.terminate();
+      worker = w2;
+      attach(w2);
+      sampleSum = 0;
+      sampleN = 0;
+      sendFrame(); // old worker's in-flight frame died with it
+      return true;
+    } catch (err) {
+      log(`could not start ${backend} engine:`, err.message);
+      return false;
+    }
+  };
+
+  const evaluateBenchmark = () => {
+    const avg = sampleSum / sampleN;
+    if (phase === 'bench-webgl') {
+      if (avg > SLOW_INFER_MS) {
+        webglAvg = avg;
+        phase = 'bench-wasm';
+        log(`webgl inference slow (${avg.toFixed(0)} ms avg) — benchmarking wasm engine…`);
+        swapTo('wasm').then((ok) => { if (!ok) { phase = 'fixed'; localStorage.setItem(BACKEND_KEY, 'webgl'); } });
+      } else {
+        phase = 'fixed';
+        localStorage.setItem(BACKEND_KEY, 'webgl');
+        log(`webgl engine confirmed (${avg.toFixed(0)} ms avg inference)`);
+      }
+    } else if (phase === 'bench-wasm') {
+      phase = 'fixed';
+      if (avg < webglAvg * 0.85) {
+        localStorage.setItem(BACKEND_KEY, 'wasm');
+        log(`wasm engine wins (${avg.toFixed(0)} ms vs ${webglAvg.toFixed(0)} ms) — saved for future runs`);
+      } else {
+        localStorage.setItem(BACKEND_KEY, 'webgl');
+        log(`webgl engine wins (${webglAvg.toFixed(0)} ms vs ${avg.toFixed(0)} ms) — switching back`);
+        swapTo('webgl');
+      }
+    }
+  };
+
+  worker = await spawn(forced || saved || 'webgl', false);
+  attach(worker);
+  sendFrame();
+  log(`pose tracking running in worker thread (${forced || saved || 'webgl'}) — renderer unblocked`);
+  return state;
+}
+
 // onProgress(message, fraction) — fraction is overall init progress in [0, 1]
 // (main.js reports the camera stage as 0–0.15 before calling this).
 export async function createTracker(video, onProgress = () => {}) {
